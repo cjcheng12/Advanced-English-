@@ -2,15 +2,17 @@ import streamlit as st
 import random
 import json
 import os
+import datetime
 from gtts import gTTS
 from io import BytesIO
 
 # --- 1. CONFIGURATION ---
-PROGRESS_FILE = "vocab_progress.json"
+PROGRESS_FILE = "vocab_progress_spaced.json" # Renamed to avoid conflicts with old file
+MASTERY_THRESHOLD = 6
 
 # --- 2. VOCABULARY DATABASE ---
 VOCAB_DB = {
-    # --- WORDS FROM PREVIOUS UPLOADS ---
+    # --- ORIGINAL WORDS ---
     "scrimped": {"def": "節省，省吃儉用", "distractors": ["浪費，揮霍", "尖叫", "爬行"], "sent": "They scrimped and saved for years to buy a house."},
     "scrupulously": {"def": "小心翼翼地，嚴謹地", "distractors": ["粗心地", "迅速地", "憤怒地"], "sent": "The nurse scrupulously washed her hands."},
     "serenity": {"def": "寧靜，安詳", "distractors": ["混亂", "焦慮", "悲傷"], "sent": "I admired the serenity of the mountain lake."},
@@ -49,7 +51,7 @@ VOCAB_DB = {
     "idyllic": {"def": "田園詩般的，恬靜的", "distractors": ["嘈雜的", "醜陋的", "繁忙的"], "sent": "We spent an idyllic vacation in the countryside."},
     "imperative": {"def": "極重要的，必要的", "distractors": ["可選的", "無用的", "次要的"], "sent": "It is imperative that you see a doctor immediately."},
 
-    # --- NEW WORDS ADDED FROM RECENT SCREENSHOTS ---
+    # --- NEW WORDS ---
     "aberrant": {"def": "異常的，脫軌的", "distractors": ["正常的", "標準的", "受歡迎的"], "sent": "His aberrant behavior worried his parents."},
     "abstinence": {"def": "節制，禁慾", "distractors": ["放縱", "暴飲暴食", "參與"], "sent": "The doctor recommended total abstinence from alcohol."},
     "acerbic": {"def": "尖刻的，酸澀的", "distractors": ["甜蜜的", "溫和的", "讚美的"], "sent": "He wrote an acerbic review of the movie."},
@@ -97,17 +99,20 @@ VOCAB_DB = {
 # --- 3. HELPER FUNCTIONS ---
 
 def load_progress():
-    """Loads the user's progress from a JSON file."""
+    """Loads progress. Structure: {'word': {'score': int, 'last_date': str}}"""
     if os.path.exists(PROGRESS_FILE):
         try:
             with open(PROGRESS_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Simple migration check: if old format {'word': 5}, ignore and start fresh to avoid crash
+                if data and isinstance(list(data.values())[0], int):
+                    return {}
+                return data
         except Exception:
-            return {} # Return empty if file is corrupt
+            return {}
     return {}
 
 def save_progress(progress):
-    """Saves the user's progress to a JSON file."""
     try:
         with open(PROGRESS_FILE, "w") as f:
             json.dump(progress, f)
@@ -115,7 +120,6 @@ def save_progress(progress):
         print(f"Warning: Could not save progress ({e})")
 
 def get_audio_bytes(text):
-    """Generates audio bytes for the English word."""
     try:
         tts = gTTS(text, lang='en')
         fp = BytesIO()
@@ -123,14 +127,18 @@ def get_audio_bytes(text):
         fp.seek(0)
         return fp
     except Exception as e:
-        print(f"Audio generation error: {e}")
         return None
 
 def initialize_game():
     progress = load_progress()
     
-    # Filter words: Must have score < 6
-    available_words = [w for w in VOCAB_DB.keys() if progress.get(w, 0) < 6]
+    # Filter words: Score must be < MASTERY_THRESHOLD (6)
+    # We look inside the dictionary: progress['word']['score']
+    available_words = []
+    for w in VOCAB_DB.keys():
+        word_data = progress.get(w, {'score': 0})
+        if word_data['score'] < MASTERY_THRESHOLD:
+            available_words.append(w)
     
     if not available_words:
         st.session_state.game_over = True
@@ -146,7 +154,7 @@ def initialize_game():
     
     st.session_state.game_words = game_words
     st.session_state.current_index = 0
-    st.session_state.score = 0
+    st.session_state.session_score = 0
     st.session_state.game_over = False
     st.session_state.progress = progress
     st.session_state.answered = False
@@ -154,8 +162,8 @@ def initialize_game():
 
 # --- 4. STREAMLIT APP LAYOUT ---
 
-st.title("📚 Advanced Vocab Mastery")
-st.markdown("Practice definitions. **Mastery Rule:** Correctly answer a word 6 times to retire it.")
+st.title("📚 Spaced Repetition Vocab")
+st.markdown("Practice definitions. **Rule:** You gain +1 Mastery Point only **once per day** per word.")
 
 # Initialize Session State
 if "game_words" not in st.session_state:
@@ -164,12 +172,11 @@ if "game_words" not in st.session_state:
 # --- GAME OVER SCREEN ---
 if st.session_state.get("game_over", False) or not st.session_state.get("game_words"):
     st.success("🎉 Session Complete! (Or all words mastered)")
-    if "score" in st.session_state and "game_words" in st.session_state:
-        st.metric(label="Final Score", value=f"{st.session_state.score} / {len(st.session_state.game_words)}")
+    if "session_score" in st.session_state:
+        st.metric(label="Session Score", value=f"{st.session_state.session_score} / {len(st.session_state.game_words)}")
     
     if st.button("Start New Game"):
-        # Reset relevant session state
-        for key in ["game_words", "current_index", "score", "game_over", "answered"]:
+        for key in ["game_words", "current_index", "session_score", "game_over", "answered"]:
             if key in st.session_state:
                 del st.session_state[key]
         st.rerun()
@@ -183,8 +190,7 @@ except IndexError:
     st.session_state.game_over = True
     st.rerun()
 
-# Prepare options (Correct + 3 Distractors)
-# We use a tracker to ensure we don't reshuffle options when the user clicks a button (which reruns the script)
+# Prepare options
 if st.session_state.current_word_tracker != current_word:
     options = word_data["distractors"] + [word_data["def"]]
     random.shuffle(options)
@@ -192,6 +198,7 @@ if st.session_state.current_word_tracker != current_word:
     st.session_state.current_word_tracker = current_word
     st.session_state.answered = False
     st.session_state.last_result = None
+    st.session_state.result_msg = ""
 
 # Display Word
 st.markdown(f"<h1 style='text-align: center; color: #4CAF50;'>{current_word}</h1>", unsafe_allow_html=True)
@@ -210,55 +217,66 @@ if not st.session_state.answered:
         if cols[i % 2].button(option, use_container_width=True):
             st.session_state.answered = True
             
-            # Check correctness
+            # CHECK CORRECTNESS
             if option == word_data["def"]:
                 st.session_state.last_result = "correct"
-                st.session_state.score += 1
+                st.session_state.session_score += 1
                 
-                # Update Mastery Score (Accumulative)
-                current_mastery = st.session_state.progress.get(current_word, 0) + 1
-                st.session_state.progress[current_word] = current_mastery
+                # SPACED REPETITION LOGIC
+                today_str = str(datetime.date.today())
+                
+                # Get existing data for this word, default to score 0, no date
+                w_prog = st.session_state.progress.get(current_word, {'score': 0, 'last_date': ''})
+                
+                if w_prog['last_date'] != today_str:
+                    # First time today!
+                    w_prog['score'] += 1
+                    w_prog['last_date'] = today_str
+                    st.session_state.result_msg = "✅ Correct! (+1 Mastery Point)"
+                else:
+                    # Already answered today
+                    st.session_state.result_msg = "☑️ Correct! (Already gained mastery today. Come back tomorrow!)"
+                
+                # Save back to progress dict
+                st.session_state.progress[current_word] = w_prog
                 save_progress(st.session_state.progress)
                 
             else:
                 st.session_state.last_result = "wrong"
+                st.session_state.result_msg = "❌ Incorrect."
             
             st.rerun()
 
-# Feedback & Next Button (Shown after answering)
+# Feedback & Next Button
 else:
     if st.session_state.last_result == "correct":
-        st.success("✅ Correct! (+1 Mastery Point)")
+        st.success(st.session_state.result_msg)
     else:
-        st.error(f"❌ Incorrect.")
+        st.error(st.session_state.result_msg)
         st.info(f"**Correct Definition:** {word_data['def']}")
         st.markdown(f"**Example Sentence:** *{word_data['sent']}*")
 
-    # Progress Info
-    mastery = st.session_state.progress.get(current_word, 0)
-    st.caption(f"Current Mastery Level for '{current_word}': {mastery}/6")
+    # Show Mastery Level
+    curr_score = st.session_state.progress.get(current_word, {'score': 0})['score']
+    st.caption(f"Current Mastery Level: {curr_score}/{MASTERY_THRESHOLD}")
 
     if st.button("Next Word ➡️", type="primary"):
-        # Move to next word
         st.session_state.current_index += 1
-        
-        # Check if game needs to end
         if st.session_state.current_index >= len(st.session_state.game_words):
             st.session_state.game_over = True
-        
         st.rerun()
 
 # Sidebar Stats
 with st.sidebar:
     if "current_index" in st.session_state:
         st.write(f"**Round:** {st.session_state.current_index + 1} / {len(st.session_state.game_words)}")
-    if "score" in st.session_state:
-        st.write(f"**Session Score:** {st.session_state.score}")
+    if "session_score" in st.session_state:
+        st.write(f"**Session Score:** {st.session_state.session_score}")
     
     st.write("---")
     if st.button("⚠️ Reset All Progress"):
         if os.path.exists(PROGRESS_FILE):
             os.remove(PROGRESS_FILE)
         st.session_state.progress = {}
-        st.warning("Progress reset. Please restart game.")
-
+        st.warning("Progress reset. Restart game.")
+            
