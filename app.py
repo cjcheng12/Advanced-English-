@@ -140,7 +140,7 @@ def save_progress(progress):
         st.error(f"Save failed: {e}")
 
 def get_audio_html(text):
-    """iPad Compatible Base64 Audio"""
+    """加上隨機 ID 確保每次切換單字時，音檔都會強制重新載入"""
     try:
         tts = gTTS(text, lang='en')
         fp = BytesIO()
@@ -148,10 +148,15 @@ def get_audio_html(text):
         fp.seek(0)
         audio_bytes = fp.read()
         b64 = base64.b64encode(audio_bytes).decode()
+        
+        # 產生一個隨機數，防止瀏覽器緩存舊音檔
+        import time
+        nonce = int(time.time())
+        
         return f"""
             <div style="text-align: center; margin: 10px 0;">
-                <audio controls style="width: 80%;">
-                    <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+                <audio id="audio_{nonce}" controls style="width: 80%;">
+                    <source src="data:audio/mp3;base64,{b64}#t={nonce}" type="audio/mp3">
                 </audio>
             </div>
         """
