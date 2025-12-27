@@ -140,8 +140,9 @@ def save_progress(progress):
         st.error(f"Save failed: {e}")
 
 def get_audio_html(text):
-    """加上隨機 ID 確保每次切換單字時，音檔都會強制重新載入"""
+    """強化版：加入隨機戳記確保 iPad Safari 100% 重新載入音檔"""
     try:
+        import time
         tts = gTTS(text, lang='en')
         fp = BytesIO()
         tts.write_to_fp(fp)
@@ -149,19 +150,24 @@ def get_audio_html(text):
         audio_bytes = fp.read()
         b64 = base64.b64encode(audio_bytes).decode()
         
-        # 產生一個隨機數，防止瀏覽器緩存舊音檔
-        import time
-        nonce = int(time.time())
+        # 產生唯一戳記，強迫瀏覽器更新
+        ts = int(time.time() * 1000)
         
+        # 使用原生 HTML5 標籤並加上 key 確保不重複
         return f"""
-            <div style="text-align: center; margin: 10px 0;">
-                <audio id="audio_{nonce}" controls style="width: 80%;">
-                    <source src="data:audio/mp3;base64,{b64}#t={nonce}" type="audio/mp3">
+            <div style="text-align: center; margin: 15px 0;">
+                <audio id="audio_{ts}" controls autoplay name="media" style="width: 80%;">
+                    <source src="data:audio/mp3;base64,{b64}#t={ts}" type="audio/mp3">
                 </audio>
             </div>
+            <script>
+                var audio = document.getElementById("audio_{ts}");
+                audio.load(); // 強制 iPad 重新加載音訊
+            </script>
         """
-    except:
-        return ""
+    except Exception as e:
+        return f"<div style='color:gray; text-align:center;'>音訊載入中或發生錯誤...</div>"
+
 
 def initialize_game():
     progress = load_progress()
