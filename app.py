@@ -4,7 +4,6 @@ import json
 import os
 import datetime
 import base64
-import time
 from gtts import gTTS
 from io import BytesIO
 
@@ -12,12 +11,12 @@ from io import BytesIO
 PROGRESS_FILE = "vocab_progress_spaced.json"
 MASTERY_THRESHOLD = 6
 
-# --- 2. VOCABULARY DATABASE (完整單字表) ---
+# --- 2. VOCABULARY DATABASE ---
 VOCAB_DB = {
     "aberrant": {"def": "異常的，脫軌的", "distractors": ["正常的", "標準的", "受歡迎的"], "sent": "His aberrant behavior worried his parents."},
     "abstinence": {"def": "節制，禁慾", "distractors": ["放縱", "暴飲暴食", "參與"], "sent": "The doctor recommended total abstinence from alcohol."},
     "acerbic": {"def": "尖刻的，酸澀的", "distractors": ["甜蜜的", "溫和的", "讚美的"], "sent": "He wrote an acerbic review of the movie."},
-    "addled": {"def": "糊塗的，混亂的", "distractors": ["清醒的", "聰明的", "敏銳的"], "sent": "My brain is addled from lack of sleep."},
+    "addled": {"def": "糊塗的，混難的", "distractors": ["清醒的", "聰明的", "敏銳的"], "sent": "My brain is addled from lack of sleep."},
     "alluded": {"def": "暗指，影射", "distractors": ["明說", "否認", "大喊"], "sent": "He alluded to the problem but didn't mention it directly."},
     "allure": {"def": "誘惑力，魅力", "distractors": ["排斥", "醜陋", "無聊"], "sent": "The allure of the big city is strong."},
     "anecdotes": {"def": "軼事，趣聞", "distractors": ["數據", "法律條款", "悲劇"], "sent": "He told funny anecdotes about his travels."},
@@ -39,7 +38,7 @@ VOCAB_DB = {
     "blunder": {"def": "大錯，失誤", "distractors": ["成功", "精確", "計劃"], "sent": "It was a major tactical blunder."},
     "brevity": {"def": "簡潔，短暫", "distractors": ["冗長", "持久", "永恆"], "sent": "I appreciate the brevity of your report."},
     "brim": {"def": "邊緣，充滿", "distractors": ["中心", "空虛", "底部"], "sent": "The cup was filled to the brim."},
-    "brusque": {"def": "唐突的，無禮的", "distractors": ["禮貌的", "溫柔的", "耐心的"], "sent": "His manner was his brusque and impatient."},
+    "brusque": {"def": "唐突的，無禮的", "distractors": ["禮貌的", "溫柔的", "耐心的"], "sent": "His manner was brusque and impatient."},
     "bungled": {"def": "搞砸，笨拙地做", "distractors": ["完善", "修復", "成功"], "sent": "They bungled the bank robbery."},
     "candid": {"def": "坦率的，直言不諱的", "distractors": ["虛偽的", "害羞的", "隱瞞的"], "sent": "To be candid, I don't like the plan."},
     "captivated": {"def": "著迷的", "distractors": ["厭惡的", "無聊的", "害怕的"], "sent": "The audience was captivated by the music."},
@@ -79,7 +78,7 @@ VOCAB_DB = {
     "depraved": {"def": "墮落的，邪惡的", "distractors": ["高尚的", "純潔的", "誠實的"], "sent": "It was a depraved act of violence."},
     "vicariously": {"def": "間接體驗地", "distractors": ["直接地", "痛苦地", "孤獨地"], "sent": "He lived vicariously through his son's success."},
     "soporific": {"def": "催眠的", "distractors": ["興奮的", "有趣的", "驚悚的"], "sent": "The professor's voice was soporific."},
-    "inept": {"def": "無能的，笨拙性", "distractors": ["熟練的", "聰明的", "專家的"], "sent": "He is socially inept and awkward."},
+    "inept": {"def": "無能的，笨拙地", "distractors": ["熟練的", "聰明的", "專家的"], "sent": "He is socially inept and awkward."},
     "obsequious": {"def": "諂媚的", "distractors": ["傲慢的", "誠實的", "勇敢的"], "sent": "The waiter was obsequious to the rich customers."},
     "intransigent": {"def": "不妥協的", "distractors": ["靈活的", "溫和的", "合作的"], "sent": "The union remained intransigent on the wage issue."},
     "scrimped": {"def": "節省，省吃儉用", "distractors": ["浪費，揮霍", "尖叫", "爬行"], "sent": "They scrimped and saved for years to buy a house."},
@@ -127,8 +126,11 @@ def load_progress():
     if os.path.exists(PROGRESS_FILE):
         try:
             with open(PROGRESS_FILE, "r") as f:
-                return json.load(f)
-        except:
+                data = json.load(f)
+                if data and isinstance(list(data.values())[0], int):
+                    return {}
+                return data
+        except Exception:
             return {}
     return {}
 
@@ -137,136 +139,170 @@ def save_progress(progress):
         with open(PROGRESS_FILE, "w") as f:
             json.dump(progress, f)
     except Exception as e:
-        st.error(f"Save error: {e}")
+        print(f"Warning: Could not save progress ({e})")
 
-def get_audio_html(text):
-    """跨平台修復版：加入隨機戳記防止 Android 快取，並加入強制 Load 腳本解決 iOS 轉圈圈"""
+def get_audio_bytes(text):
     try:
         tts = gTTS(text, lang='en')
         fp = BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
-        b64 = base64.b64encode(fp.read()).decode()
-        ts = int(time.time() * 1000)
-        
-        return f"""
-            <div style="text-align: center; margin: 15px 0;">
-                <audio id="audio_{ts}" controls autoplay name="media" style="width: 80%;">
-                    <source src="data:audio/mp3;base64,{b64}#t={ts}" type="audio/mp3">
-                </audio>
-            </div>
-            <script>
-                var a = document.getElementById("audio_{ts}");
-                a.load(); 
-                a.play().catch(function(e){{ console.log("Autoplay blocked"); }});
-            </script>
-        """
-    except:
-        return ""
+        return fp
+    except Exception as e:
+        return None
 
 def initialize_game():
     progress = load_progress()
-    available_words = [w for w in VOCAB_DB.keys() if progress.get(w, {}).get('score', 0) < MASTERY_THRESHOLD]
+    available_words = []
+    for w in VOCAB_DB.keys():
+        word_data = progress.get(w, {'score': 0})
+        if word_data['score'] < MASTERY_THRESHOLD:
+            available_words.append(w)
     
-    # 防止練一個就結束：如果沒單字，就隨機抽 20 個複習
     if not available_words:
-        available_words = list(VOCAB_DB.keys())
+        st.session_state.game_over = True
+        st.session_state.game_words = []
+        return
 
-    num_to_sample = min(len(available_words), 20)
-    st.session_state.game_words = random.sample(available_words, num_to_sample)
+    if len(available_words) < 20:
+        game_words = available_words
+        random.shuffle(game_words)
+    else:
+        game_words = random.sample(available_words, 20)
+    
+    st.session_state.game_words = game_words
     st.session_state.current_index = 0
     st.session_state.session_score = 0
     st.session_state.game_over = False
+    st.session_state.progress = progress
     st.session_state.answered = False
     st.session_state.current_word_tracker = None
 
-# --- 4. APP LOGIC ---
+# --- 4. STREAMLIT APP LAYOUT ---
 
-st.set_page_config(page_title="Vocab Hero", page_icon="📖")
+st.set_page_config(page_title="Vocab Mastery", page_icon="📚")
+st.title("📚 Spaced Repetition Vocab")
+st.markdown("Practice definitions. **Rule:** You gain +1 Mastery Point only **once per day** per word.")
 
-# 重要：確保變數永遠初始化
-if "game_words" not in st.session_state or st.session_state.game_words is None:
+if "game_words" not in st.session_state:
     initialize_game()
-if "progress" not in st.session_state:
-    st.session_state.progress = load_progress()
 
-# --- 遊戲結束畫面 ---
-if st.session_state.get("game_over", False):
-    st.balloons()
-    st.success("🎉 本輪練習完成！")
-    st.metric("本輪得分", f"{st.session_state.session_score} / {len(st.session_state.game_words)}")
-    if st.button("再練一輪", type="primary"):
-        initialize_game()
+# --- GAME OVER SCREEN ---
+if st.session_state.get("game_over", False) or not st.session_state.get("game_words"):
+    st.success("🎉 Session Complete!")
+    if "session_score" in st.session_state:
+        st.metric(label="Session Score", value=f"{st.session_state.session_score} / {len(st.session_state.game_words)}")
+    
+    if st.button("Start New Game"):
+        for key in ["game_words", "current_index", "session_score", "game_over", "answered"]:
+            if key in st.session_state:
+                del st.session_state[key]
         st.rerun()
     st.stop()
 
-# --- 載入當前單字 ---
+# --- GAME LOGIC ---
 try:
     current_word = st.session_state.game_words[st.session_state.current_index]
     word_data = VOCAB_DB[current_word]
-except:
-    initialize_game()
+except IndexError:
+    st.session_state.game_over = True
     st.rerun()
 
-# 初始化選項 (每題僅一次)
-if st.session_state.get("current_word_tracker") != current_word:
+if st.session_state.current_word_tracker != current_word:
     options = word_data["distractors"] + [word_data["def"]]
     random.shuffle(options)
     st.session_state.options = options
     st.session_state.current_word_tracker = current_word
     st.session_state.answered = False
+    st.session_state.last_result = None
+    st.session_state.result_msg = ""
 
-# --- UI 顯示 ---
+# Display Word
 st.markdown(f"<h1 style='text-align: center; color: #4CAF50;'>{current_word}</h1>", unsafe_allow_html=True)
 
-# 音訊容器 (使用 empty 強迫 iOS 重新偵測媒體流)
+# --- FIX: ROBUST AUDIO FOR IPAD ---
 audio_placeholder = st.empty()
-with audio_placeholder:
-    st.markdown(get_audio_html(current_word), unsafe_allow_html=True)
+audio_fp = get_audio_bytes(current_word)
+
+if audio_fp:
+    # Convert to base64 for embedding
+    audio_data = audio_fp.read()
+    b64 = base64.b64encode(audio_data).decode()
+    # Unique ID forces browser to treat it as a new sound file
+    player_id = f"audio-{st.session_state.current_index}-{current_word}"
+    
+    audio_html = f"""
+        <div style="display: flex; justify-content: center; margin-bottom: 20px;">
+            <audio controls id="{player_id}" src="data:audio/mp3;base64,{b64}">
+            </audio>
+        </div>
+    """
+    audio_placeholder.markdown(audio_html, unsafe_allow_html=True)
 
 st.write("---")
 
-# 回答介面
+# Answer Buttons
 if not st.session_state.answered:
     cols = st.columns(2)
     for i, option in enumerate(st.session_state.options):
-        if cols[i % 2].button(option, key=f"opt_{i}_{st.session_state.current_index}", use_container_width=True):
+        if cols[i % 2].button(option, use_container_width=True, key=f"opt_{i}"):
             st.session_state.answered = True
+            
             if option == word_data["def"]:
                 st.session_state.last_result = "correct"
                 st.session_state.session_score += 1
                 
-                today = str(datetime.date.today())
+                today_str = str(datetime.date.today())
                 w_prog = st.session_state.progress.get(current_word, {'score': 0, 'last_date': ''})
-                if w_prog['last_date'] != today:
+                
+                if w_prog['last_date'] != today_str:
                     w_prog['score'] += 1
-                    w_prog['last_date'] = today
+                    w_prog['last_date'] = today_str
+                    st.session_state.result_msg = "✅ Correct! (+1 Mastery Point)"
+                else:
+                    st.session_state.result_msg = "☑️ Correct! (Mastery limited to +1 per day)"
+                
                 st.session_state.progress[current_word] = w_prog
                 save_progress(st.session_state.progress)
             else:
                 st.session_state.last_result = "wrong"
+                st.session_state.result_msg = "❌ Incorrect."
+            
             st.rerun()
+
+# Feedback & Next Button
 else:
     if st.session_state.last_result == "correct":
-        st.success("✅ 回答正確！")
+        st.success(st.session_state.result_msg)
     else:
-        st.error(f"❌ 錯誤。正確答案：{word_data['def']}")
-        st.info(f"例句：{word_data['sent']}")
+        st.error(st.session_state.result_msg)
+        st.info(f"**Correct Definition:** {word_data['def']}")
+        st.markdown(f"**Example Sentence:** *{word_data['sent']}*")
 
-    if st.button("下一個單字 ➡️", type="primary"):
+    curr_score = st.session_state.progress.get(current_word, {'score': 0})['score']
+    st.caption(f"Current Mastery Level: {curr_score}/{MASTERY_THRESHOLD}")
+
+    if st.button("Next Word ➡️", type="primary"):
+        # Explicitly clear the audio placeholder before moving on
+        audio_placeholder.empty()
         st.session_state.current_index += 1
         if st.session_state.current_index >= len(st.session_state.game_words):
             st.session_state.game_over = True
         st.rerun()
 
-# 側邊欄紀錄
+# Sidebar Stats
 with st.sidebar:
-    st.header("練習進度")
-    st.write(f"單字：{st.session_state.current_index + 1} / {len(st.session_state.game_words)}")
-    st.write(f"得分：{st.session_state.session_score}")
-    st.divider()
-    if st.button("⚠️ 重置進度 (歸零)"):
-        if os.path.exists(PROGRESS_FILE): os.remove(PROGRESS_FILE)
-        initialize_game()
-        st.rerun()
-
+    st.write(f"**Round:** {st.session_state.current_index + 1} / {len(st.session_state.game_words)}")
+    if "session_score" in st.session_state:
+        st.write(f"**Session Score:** {st.session_state.session_score}")
+    
+    st.write("---")
+    
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r") as f:
+            st.download_button("💾 Download Progress Backup", f, file_name=PROGRESS_FILE)
+            
+    if st.button("⚠️ Reset All Progress"):
+        if os.path.exists(PROGRESS_FILE):
+            os.remove(PROGRESS_FILE)
+      
