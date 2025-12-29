@@ -4,12 +4,14 @@ import json
 import os
 import datetime
 import base64
+import re
 from gtts import gTTS
 from io import BytesIO
 
 # --- 1. CONFIGURATION ---
 PROGRESS_FILE = "vocab_progress_spaced.json"
 MASTERY_THRESHOLD = 6
+SESSION_SIZE = 20
 
 # --- 2. VOCABULARY DATABASE ---
 VOCAB_DB = {
@@ -123,53 +125,92 @@ VOCAB_DB = {
 # --- 3. HELPER FUNCTIONS ---
 
 def load_progress():
-    if os.path.exists(PROGRESS_FILE):
-        try:
-            with open(PROGRESS_FILE, "r") as f:
-                data = json.load(f)
-                if data and isinstance(list(data.values())[0], int):
-                    return {}
-                return data
-        except Exception:
-            return {}
-    return {}
+    """Load progress. Backward compatible:
+    - new: {word: {"score": int, "last_date": "YYYY-MM-DD"}}
+    - old: {word: int}  -> convert to new
+    """
+    if not os.path.exists(PROGRESS_FILE):
+        return {}
 
-def save_progress(progress):
     try:
-        with open(PROGRESS_FILE, "w") as f:
-            json.dump(progress, f)
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # Old format: values are int
+        if data and isinstance(next(iter(data.values())), int):
+            converted = {}
+            for w, sc in data.items():
+                converted[w] = {"score": int(sc), "last_date": ""}
+            return converted
+
+        # Validate-ish new format
+        if isinstance(data, dict):
+            out = {}
+            for w, v in data.items():
+                if isinstance(v, dict):
+                    out[w] = {
+                        "score": int(v.get("score", 0)),
+                        "last_date": str(v.get("last_date", "")),
+                    }
+            return out
+        return {}
+    except Exception:
+        return {}
+
+def save_progress(progress: dict):
+    try:
+        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Warning: Could not save progress ({e})")
 
-def get_audio_bytes(text):
+@st.cache_data(show_spinner=False)
+def tts_to_base64(text: str) -> str | None:
+    """Generate TTS and return base64 mp3 string. Cached for speed/stability."""
     try:
-        tts = gTTS(text, lang='en')
+        tts = gTTS(text, lang="en")
         fp = BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
-        return fp
-    except Exception as e:
+        audio_data = fp.read()
+        return base64.b64encode(audio_data).decode()
+    except Exception:
         return None
+
+def highlight_word_in_sentence(word: str, sentence: str) -> str:
+    """Bold+color the target word in sentence (case-insensitive)."""
+    # Whole word match; if not found, just return sentence escaped-ish
+    pattern = re.compile(rf"\b({re.escape(word)})\b", re.IGNORECASE)
+    if not pattern.search(sentence):
+        return sentence
+    return pattern.sub(r"<strong style='color:#4CAF50;'>\1</strong>", sentence)
+
+def cloze_sentence(word: str, sentence: str) -> str:
+    """Replace the target word with blanks (case-insensitive, whole word)."""
+    pattern = re.compile(rf"\b({re.escape(word)})\b", re.IGNORECASE)
+    if not pattern.search(sentence):
+        return sentence
+    return pattern.sub("_____", sentence)
 
 def initialize_game():
     progress = load_progress()
     available_words = []
     for w in VOCAB_DB.keys():
-        word_data = progress.get(w, {'score': 0})
-        if word_data['score'] < MASTERY_THRESHOLD:
+        word_prog = progress.get(w, {"score": 0, "last_date": ""})
+        if word_prog.get("score", 0) < MASTERY_THRESHOLD:
             available_words.append(w)
-    
+
     if not available_words:
         st.session_state.game_over = True
         st.session_state.game_words = []
         return
 
-    if len(available_words) < 20:
-        game_words = available_words
+    if len(available_words) <= SESSION_SIZE:
+        game_words = available_words[:]
         random.shuffle(game_words)
     else:
-        game_words = random.sample(available_words, 20)
-    
+        game_words = random.sample(available_words, SESSION_SIZE)
+
     st.session_state.game_words = game_words
     st.session_state.current_index = 0
     st.session_state.session_score = 0
@@ -178,11 +219,35 @@ def initialize_game():
     st.session_state.answered = False
     st.session_state.current_word_tracker = None
 
+def reset_game_state():
+    for key in [
+        "game_words",
+        "current_index",
+        "session_score",
+        "game_over",
+        "answered",
+        "current_word_tracker",
+        "options",
+        "last_result",
+        "result_msg",
+        "progress",
+    ]:
+        if key in st.session_state:
+            del st.session_state[key]
+
 # --- 4. STREAMLIT APP LAYOUT ---
 
-st.set_page_config(page_title="Vocab Mastery", page_icon="📚")
+st.set_page_config(page_title="Vocab Mastery", page_icon="📚", layout="centered")
 st.title("📚 Spaced Repetition Vocab")
 st.markdown("Practice definitions. **Rule:** You gain +1 Mastery Point only **once per day** per word.")
+
+# Sidebar controls (best-learning knobs)
+with st.sidebar:
+    st.subheader("⚙️ Learning Settings")
+    show_sentence = st.toggle("Show example sentence", value=True)
+    cloze_mode = st.toggle("Cloze mode (hide the word)", value=False)
+    play_sentence_audio = st.toggle("Include sentence audio", value=False)
+    st.write("---")
 
 if "game_words" not in st.session_state:
     initialize_game()
@@ -190,24 +255,39 @@ if "game_words" not in st.session_state:
 # --- GAME OVER SCREEN ---
 if st.session_state.get("game_over", False) or not st.session_state.get("game_words"):
     st.success("🎉 Session Complete!")
-    if "session_score" in st.session_state:
+    if "session_score" in st.session_state and "game_words" in st.session_state:
         st.metric(label="Session Score", value=f"{st.session_state.session_score} / {len(st.session_state.game_words)}")
-    
+
     if st.button("Start New Game"):
-        for key in ["game_words", "current_index", "session_score", "game_over", "answered"]:
-            if key in st.session_state:
-                del st.session_state[key]
+        reset_game_state()
+        initialize_game()
         st.rerun()
+
+    # Progress tools
+    with st.sidebar:
+        st.subheader("📦 Progress")
+        if os.path.exists(PROGRESS_FILE):
+            with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+                st.download_button("💾 Download Progress Backup", f, file_name=PROGRESS_FILE)
+
+        if st.button("⚠️ Reset All Progress"):
+            if os.path.exists(PROGRESS_FILE):
+                os.remove(PROGRESS_FILE)
+            reset_game_state()
+            initialize_game()
+            st.rerun()
+
     st.stop()
 
 # --- GAME LOGIC ---
 try:
     current_word = st.session_state.game_words[st.session_state.current_index]
     word_data = VOCAB_DB[current_word]
-except IndexError:
+except Exception:
     st.session_state.game_over = True
     st.rerun()
 
+# Set options once per word
 if st.session_state.current_word_tracker != current_word:
     options = word_data["distractors"] + [word_data["def"]]
     random.shuffle(options)
@@ -217,92 +297,134 @@ if st.session_state.current_word_tracker != current_word:
     st.session_state.last_result = None
     st.session_state.result_msg = ""
 
-# Display Word
-st.markdown(f"<h1 style='text-align: center; color: #4CAF50;'>{current_word}</h1>", unsafe_allow_html=True)
+# --- DISPLAY WORD ---
+st.markdown(
+    f"<h1 style='text-align: center; color: #4CAF50; margin-bottom: 6px;'>{current_word}</h1>",
+    unsafe_allow_html=True,
+)
 
-# --- FIX: ROBUST AUDIO FOR IPAD ---
+# --- DISPLAY SENTENCE (BEST LEARNING: context first) ---
+if show_sentence:
+    raw_sentence = word_data.get("sent", "")
+    if cloze_mode:
+        shown_sentence = cloze_sentence(current_word, raw_sentence)
+    else:
+        shown_sentence = highlight_word_in_sentence(current_word, raw_sentence)
+
+    st.markdown(
+        f"<div style='text-align:center; font-size:20px; margin-bottom: 14px; line-height: 1.5;'>"
+        f"<em>{shown_sentence}</em>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+# --- AUDIO (ROBUST FOR IPAD via base64) ---
 audio_placeholder = st.empty()
-audio_fp = get_audio_bytes(current_word)
 
-if audio_fp:
-    # Convert to base64 for embedding
-    audio_data = audio_fp.read()
-    b64 = base64.b64encode(audio_data).decode()
-    # Unique ID forces browser to treat it as a new sound file
-    player_id = f"audio-{st.session_state.current_index}-{current_word}"
-    
-    audio_html = f"""
-        <div style="display: flex; justify-content: center; margin-bottom: 20px;">
-            <audio controls id="{player_id}" src="data:audio/mp3;base64,{b64}">
-            </audio>
-        </div>
-    """
-    audio_placeholder.markdown(audio_html, unsafe_allow_html=True)
+# Always provide word audio
+word_b64 = tts_to_base64(current_word)
+
+# Optionally provide sentence audio (costly, so user-controlled)
+sent_b64 = None
+if play_sentence_audio and show_sentence:
+    sent_b64 = tts_to_base64(word_data.get("sent", ""))
+
+if word_b64 or sent_b64:
+    players = []
+    if word_b64:
+        player_id = f"word-audio-{st.session_state.current_index}-{current_word}"
+        players.append(
+            f"""
+            <div style="display:flex; justify-content:center; margin-bottom: 10px;">
+              <div style="width: min(520px, 100%);">
+                <div style="text-align:center; font-size:14px; opacity:0.8; margin-bottom:4px;">🔊 Word</div>
+                <audio controls id="{player_id}" src="data:audio/mp3;base64,{word_b64}"></audio>
+              </div>
+            </div>
+            """
+        )
+    if sent_b64:
+        player_id2 = f"sent-audio-{st.session_state.current_index}-{current_word}"
+        players.append(
+            f"""
+            <div style="display:flex; justify-content:center; margin-bottom: 6px;">
+              <div style="width: min(520px, 100%);">
+                <div style="text-align:center; font-size:14px; opacity:0.8; margin-bottom:4px;">🔊 Sentence</div>
+                <audio controls id="{player_id2}" src="data:audio/mp3;base64,{sent_b64}"></audio>
+              </div>
+            </div>
+            """
+        )
+    audio_placeholder.markdown("".join(players), unsafe_allow_html=True)
 
 st.write("---")
 
-# Answer Buttons
+# --- ANSWERS ---
 if not st.session_state.answered:
     cols = st.columns(2)
     for i, option in enumerate(st.session_state.options):
-        if cols[i % 2].button(option, use_container_width=True, key=f"opt_{i}"):
+        if cols[i % 2].button(option, use_container_width=True, key=f"opt_{st.session_state.current_index}_{i}"):
             st.session_state.answered = True
-            
+
             if option == word_data["def"]:
                 st.session_state.last_result = "correct"
                 st.session_state.session_score += 1
-                
+
                 today_str = str(datetime.date.today())
-                w_prog = st.session_state.progress.get(current_word, {'score': 0, 'last_date': ''})
-                
-                if w_prog['last_date'] != today_str:
-                    w_prog['score'] += 1
-                    w_prog['last_date'] = today_str
+                w_prog = st.session_state.progress.get(current_word, {"score": 0, "last_date": ""})
+
+                if w_prog.get("last_date", "") != today_str:
+                    w_prog["score"] = int(w_prog.get("score", 0)) + 1
+                    w_prog["last_date"] = today_str
                     st.session_state.result_msg = "✅ Correct! (+1 Mastery Point)"
                 else:
                     st.session_state.result_msg = "☑️ Correct! (Mastery limited to +1 per day)"
-                
+
                 st.session_state.progress[current_word] = w_prog
                 save_progress(st.session_state.progress)
             else:
                 st.session_state.last_result = "wrong"
                 st.session_state.result_msg = "❌ Incorrect."
-            
+
             st.rerun()
 
-# Feedback & Next Button
+# --- FEEDBACK + NEXT ---
 else:
     if st.session_state.last_result == "correct":
         st.success(st.session_state.result_msg)
+        # Best-learning: even答對也給你快速確認一次（不爆版）
+        st.caption(f"✅ Meaning check: **{word_data['def']}**")
     else:
         st.error(st.session_state.result_msg)
         st.info(f"**Correct Definition:** {word_data['def']}")
         st.markdown(f"**Example Sentence:** *{word_data['sent']}*")
 
-    curr_score = st.session_state.progress.get(current_word, {'score': 0})['score']
+    curr_score = st.session_state.progress.get(current_word, {"score": 0}).get("score", 0)
     st.caption(f"Current Mastery Level: {curr_score}/{MASTERY_THRESHOLD}")
 
     if st.button("Next Word ➡️", type="primary"):
-        # Explicitly clear the audio placeholder before moving on
         audio_placeholder.empty()
         st.session_state.current_index += 1
         if st.session_state.current_index >= len(st.session_state.game_words):
             st.session_state.game_over = True
         st.rerun()
 
-# Sidebar Stats
+# --- SIDEBAR STATS + TOOLS ---
 with st.sidebar:
+    st.subheader("📊 Session")
     st.write(f"**Round:** {st.session_state.current_index + 1} / {len(st.session_state.game_words)}")
-    if "session_score" in st.session_state:
-        st.write(f"**Session Score:** {st.session_state.session_score}")
-    
+    st.write(f"**Session Score:** {st.session_state.session_score}")
+
     st.write("---")
-    
+    st.subheader("📦 Progress")
+
     if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE, "r") as f:
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
             st.download_button("💾 Download Progress Backup", f, file_name=PROGRESS_FILE)
-            
+
     if st.button("⚠️ Reset All Progress"):
         if os.path.exists(PROGRESS_FILE):
             os.remove(PROGRESS_FILE)
-      
+        reset_game_state()
+        initialize_game()
+        st.rerun()
