@@ -176,9 +176,9 @@ def save_progress(progress):
     except Exception as e:
         st.warning(f"⚠️ Could not save progress: {e}")
 
-@st.cache_data(show_spinner=False)
-def tts_mp3_bytes_cached(text: str) -> bytes | None:
-    """Cache TTS result to reduce repeated network calls. (Still may fail on some deployments.)"""
+@st.cache_data(show_spinner=False, ttl=24*3600, max_entries=500)
+def tts_mp3_bytes_cached(text: str):
+    """Cached gTTS call. Can still be slow or fail on Streamlit Cloud."""
     try:
         tts = gTTS(text, lang="en")
         fp = BytesIO()
@@ -239,6 +239,13 @@ st.set_page_config(page_title="Spaced Repetition Vocab", page_icon="📚", layou
 st.title("📚 Spaced Repetition Vocab")
 st.markdown("Practice definitions. **Rule:** You gain +1 Mastery Point only **once per day** per word.")
 
+# Sidebar: settings first (so main area can use it)
+with st.sidebar:
+    st.header("⚙️ Settings")
+    AUDIO_ON = st.toggle("🔊 Audio (gTTS)", value=False)
+    st.caption("Tip: Keep Audio OFF on Streamlit Cloud for smoother gameplay.")
+    st.write("---")
+
 # Initialize once
 if "game_words" not in st.session_state:
     initialize_game()
@@ -279,10 +286,13 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Audio
-mp3_bytes = tts_mp3_bytes_cached(current_word)
-if mp3_bytes:
-    st.audio(mp3_bytes, format="audio/mp3")
+# Audio (only if enabled)
+if AUDIO_ON:
+    mp3_bytes = tts_mp3_bytes_cached(current_word)
+    if mp3_bytes:
+        st.audio(mp3_bytes, format="audio/mp3")
+    else:
+        st.caption("Audio unavailable right now (gTTS may be blocked/slow).")
 
 st.write("---")
 
@@ -302,11 +312,4 @@ if not st.session_state.answered:
                 today_str = str(datetime.date.today())
                 w_prog = st.session_state.progress.get(current_word, {"score": 0, "last_date": ""})
 
-                if w_prog.get("last_date", "") != today_str:
-                    w_prog["score"] = int(w_prog.get("score", 0)) + 1
-                    w_prog["last_date"] = today_str
-                    st.session_state.result_msg = "✅ Correct! (+1 Mastery Point)"
-                else:
-                    st.session_state.result_msg = "☑️ Correct! (Mastery limited to +1 per day)"
-
-     
+             
