@@ -1,23 +1,32 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
-import pandas as pd
 import random
 import datetime
+from upstash_redis import Redis
 from gtts import gTTS
 from io import BytesIO
 
 # =========================================================
-# 1) 配置 (CONFIG)
+# 1) 初始化雲端資料庫
+# =========================================================
+@st.cache_resource
+def get_redis():
+    return Redis(
+        url=st.secrets["UPSTASH_REDIS_REST_URL"],
+        token=st.secrets["UPSTASH_REDIS_REST_TOKEN"]
+    )
+
+redis = get_redis()
+
+# =========================================================
+# 2) 配置與單字庫 (2025-12-28 運送訂單類型)
 # =========================================================
 MASTERY_THRESHOLD = 6
 WORDS_PER_SESSION = 20
-
-# 所有的單字庫 (VOCAB_DB)
 VOCAB_DB = {
     "aberrant": {"def": "異常的，脫軌的", "distractors": ["正常的", "標準的", "受歡迎的"], "sent": "His aberrant behavior worried his parents."},
     "abstinence": {"def": "節制，禁慾", "distractors": ["放縱", "暴飲暴食", "參與"], "sent": "The doctor recommended total abstinence from alcohol."},
     "acerbic": {"def": "尖刻的，酸澀的", "distractors": ["甜蜜的", "溫和的", "讚美的"], "sent": "He wrote an acerbic review of the movie."},
-    "addled": {"def": "糊塗的，混難的", "distractors": ["清醒的", "聰明的", "敏銳的"], "sent": "My brain is addled from lack of sleep."},
+    "addled": {"def": "糊塗的，混亂的", "distractors": ["清醒的", "聰明的", "敏銳的"], "sent": "My brain is addled from lack of sleep."},
     "alluded": {"def": "暗指，影射", "distractors": ["明說", "否認", "大喊"], "sent": "He alluded to the problem but didn't mention it directly."},
     "allure": {"def": "誘惑力，魅力", "distractors": ["排斥", "醜陋", "無聊"], "sent": "The allure of the big city is strong."},
     "anecdotes": {"def": "軼事，趣聞", "distractors": ["數據", "法律條款", "悲劇"], "sent": "He told funny anecdotes about his travels."},
@@ -75,156 +84,132 @@ VOCAB_DB = {
     "destitute": {"def": "赤貧的，一無所有的", "distractors": ["富有的", "充足的", "奢華的"], "sent": "The war left many families destitute."},
     "diligence": {"def": "勤奮", "distractors": ["懶惰", "疏忽", "休閒"], "sent": "Success requires hard work and diligence."},
     "dinged": {"def": "被撞擊，被扣分", "distractors": ["修復", "獎勵", "清潔"], "sent": "The car door got dinged in the parking lot."},
-    # ... 其餘單字可視需要繼續加入
+
+    # === SELECTION FROM BACKUP FILE ===
+    "irrepressible": {"def": "抑制不住的", "distractors": ["壓抑的", "冷靜的", "悲傷的"], "sent": "He has an irrepressible sense of humor."},
+    "depraved": {"def": "墮落的，邪惡的", "distractors": ["高尚的", "純潔的", "誠實的"], "sent": "It was a depraved act of violence."},
+    "vicariously": {"def": "間接體驗地", "distractors": ["直接地", "痛苦地", "孤獨地"], "sent": "He lived vicariously through his son's success."},
+    "soporific": {"def": "催眠的", "distractors": ["興奮的", "有趣的", "驚悚的"], "sent": "The professor's voice was soporific."},
+    "inept": {"def": "無能的，笨拙的", "distractors": ["熟練的", "聰明的", "專家的"], "sent": "He is socially inept and awkward."},
+    "obsequious": {"def": "諂媚的", "distractors": ["傲慢的", "誠實的", "勇敢的"], "sent": "The waiter was obsequious to the rich customers."},
+    "intransigent": {"def": "不妥協的", "distractors": ["靈活的", "溫和的", "合作的"], "sent": "The union remained intransigent on the wage issue."},
+    "scrimped": {"def": "節省，省吃儉用", "distractors": ["浪費，揮霍", "尖叫", "爬行"], "sent": "They scrimped and saved for years to buy a house."},
+    "scrupulously": {"def": "小心翼翼地，嚴謹地", "distractors": ["粗心地", "迅速地", "憤怒地"], "sent": "The nurse scrupulously washed her hands."},
+    "serenity": {"def": "寧靜，安詳", "distractors": ["混亂", "焦慮", "悲傷"], "sent": "I admired the serenity of the mountain lake."},
+    "squander": {"def": "浪費，揮霍", "distractors": ["儲存", "投資", "建造"], "sent": "Don't squander your opportunities."},
+    "squeamish": {"def": "神經質的，易受驚的", "distractors": ["勇敢的", "強壯的", "冷靜的"], "sent": "He is squeamish about the sight of blood."},
+    "stigmatize": {"def": "侮辱，給...帶來恥辱", "distractors": ["讚揚", "幫助", "忽視"], "sent": "People should not be stigmatized for having a mental illness."},
+    "quizzically": {"def": "疑惑地，探詢地", "distractors": ["肯定地", "憤怒地", "高興地"], "sent": "She looked at him quizzically, not understanding his joke."},
+    "ravenous": {"def": "極其飢餓的", "distractors": ["飽的", "疲倦的", "口渴的"], "sent": "After the hike, we were absolutely ravenous."},
+    "reclamation": {"def": "開墾，回收利用", "distractors": ["破壞", "放棄", "銷售"], "sent": "The reclamation of the wetlands was a success."},
+    "repugnant": {"def": "令人厭惡的，反感的", "distractors": ["迷人的", "美味的", "昂貴的"], "sent": "I find his prejudice absolutely repugnant."},
+    "retribution": {"def": "報應，懲罰", "distractors": ["獎勵", "原諒", "忽視"], "sent": "He feared retribution for his crimes."},
+    "inexorable": {"def": "不可阻擋的，無情的", "distractors": ["可逆的", "溫柔的", "短暫的"], "sent": "The inexorable progress of science continues."},
+    "infatuated": {"def": "迷戀的", "distractors": ["討厭的", "害怕的", "冷漠的"], "sent": "He became infatuated with the new girl in class."},
+    "innocuous": {"def": "無害的", "distractors": ["危險的", "有毒的", "昂貴的"], "sent": "It seemed like an innocuous question."},
+    "jubilant": {"def": "歡騰的，喜氣洋洋的", "distractors": ["悲傷的", "憤怒的", "無聊的"], "sent": "The fans were jubilant after their team won."},
+    "litany": {"def": "喋喋不休的抱怨/陳述", "distractors": ["簡短的回答", "快樂的歌曲", "沉默"], "sent": "She recited a litany of grievances against her boss."},
+    "pandemonium": {"def": "大混亂，騷動", "distractors": ["平靜", "秩序", "音樂"], "sent": "Pandemonium broke out when the fire alarm rang."},
+    "parched": {"def": "乾渴的，乾枯的", "distractors": ["濕潤的", "寒冷的", "飽的"], "sent": "My throat was parched after the long run."},
+    "parochial": {"def": "狹隘的，地方性的", "distractors": ["全球的", "開放的", "寬容的"], "sent": "He has a very parochial view of the world."},
+    "travesty": {"def": "拙劣的模仿，嘲弄", "distractors": ["完美的複製品", "嚴肅的戲劇", "悲劇"], "sent": "The trial was a travesty of justice."},
+    "trepidation": {"def": "驚恐，不安", "distractors": ["自信", "平靜", "快樂"], "sent": "She opened the letter with some trepidation."},
+    "unscrupulous": {"def": "肆無忌憚的，無道德的", "distractors": ["誠實的", "善良的", "謹慎的"], "sent": "The unscrupulous salesman tricked the elderly lady."},
+    "whimsical": {"def": "異想天開的，古怪的", "distractors": ["嚴肅的", "實際的", "無聊的"], "sent": "The artist has a whimsical style."},
+    "zeal": {"def": "熱情，熱忱", "distractors": ["冷漠", "懶惰", "恐懼"], "sent": "He attacked the project with great zeal."},
+    "extricating": {"def": "解救，使擺脫", "distractors": ["糾纏", "忽視", "破壞"], "sent": "He had trouble extricating himself from the difficult situation."},
+    "fickle": {"def": "善變的", "distractors": ["堅定的", "忠誠的", "緩慢的"], "sent": "Public opinion can be notoriously fickle."},
+    "gregarious": {"def": "社交的，群居的", "distractors": ["孤僻的", "害羞的", "安靜的"], "sent": "She is a gregarious person who loves parties."},
+    "plight": {"def": "困境，苦難", "distractors": ["幸福", "財富", "假期"], "sent": "We must help the plight of the refugees."},
+    "precarious": {"def": "不穩定的，危險的", "distractors": ["安全的", "堅固的", "舒適的"], "sent": "The ladder was placed in a precarious position."},
+    "prudent": {"def": "謹慎的，精明的", "distractors": ["魯莽的", "愚蠢的", "昂貴的"], "sent": "It is prudent to save money for emergencies."},
+    "quintessential": {"def": "典型的，完美的", "distractors": ["罕見的", "錯誤的", "糟糕的"], "sent": "She is the quintessential New Yorker."},
+    "temerity": {"def": "魯莽，冒失", "distractors": ["謹慎", "恐懼", "禮貌"], "sent": "He had the temerity to call me a liar."},
+    "tempestuous": {"def": "劇烈的，暴風雨般的", "distractors": ["平靜的", "溫和的", "緩慢的"], "sent": "They had a tempestuous relationship."},
+    "grimaced": {"def": "做鬼臉(表示痛苦/厭惡)", "distractors": ["微笑", "大笑", "睡覺"], "sent": "He grimaced in pain when he stubbed his toe."},
+    "gumption": {"def": "進取心，魄力", "distractors": ["懶惰", "愚蠢", "恐懼"], "sent": "It took a lot of gumption to quit her job and start a business."},
+    "idyllic": {"def": "田園詩般的，恬靜的", "distractors": ["嘈雜的", "醜陋的", "繁忙的"], "sent": "We spent an idyllic vacation in the countryside."},
+    "imperative": {"def": "極重要的，必要的", "distractors": ["可選的", "無用的", "次要的"], "sent": "It is imperative that you see a doctor immediately."}
 }
 
 # =========================================================
-# 2) GOOGLE SHEETS 連結與邏輯
+# 3) 雲端讀寫函數
 # =========================================================
-st.set_page_config(page_title="單字學習雲端版", page_icon="☁️")
-conn = st.connection("gsheets", type=GSheetsConnection)
+def load_progress_cloud():
+    # 從 Redis 讀取 JSON 字串
+    data = redis.get("user_progress")
+    return data if data else {}
 
-def get_all_progress():
-    """從 Google Sheets 獲取所有分數，若無則初始化"""
-    try:
-        df = conn.read(ttl="1s") # 強制不使用緩存，讀取最新數據
-        return df.set_index("word").to_dict("index")
-    except:
-        return {}
-
-def save_word_progress(word, score, last_date):
-    """更新單個單字進度到 Google Sheets"""
-    df = conn.read(ttl="0")
-    if word in df["word"].values:
-        df.loc[df["word"] == word, ["score", "last_date"]] = [score, last_date]
-    else:
-        new_row = pd.DataFrame([{"word": word, "score": score, "last_date": last_date}])
-        df = pd.concat([df, new_row], ignore_index=True)
-    
-    conn.update(data=df)
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def tts_mp3_bytes_cached(text: str):
-    try:
-        tts = gTTS(text, lang="en")
-        fp = BytesIO()
-        tts.write_to_fp(fp)
-        return fp.getvalue()
-    except: return None
+def save_progress_cloud(word, score, last_date):
+    progress = load_progress_cloud()
+    progress[word] = {"score": score, "last_date": last_date}
+    # 存回 Redis (永久儲存)
+    redis.set("user_progress", progress)
 
 # =========================================================
-# 3) 遊戲邏輯
+# 4) 遊戲主邏輯
 # =========================================================
-def initialize_game():
-    progress = get_all_progress()
-    # 篩選未達標單字
+st.set_page_config(page_title="全自動永久存檔版", page_icon="⚡")
+
+if "game_words" not in st.session_state:
+    progress = load_progress_cloud()
     available = [w for w in VOCAB_DB.keys() if progress.get(w, {}).get("score", 0) < MASTERY_THRESHOLD]
     
     if not available:
-        st.session_state.game_over = True
-        return
+        st.success("🎉 太強了！所有單字都已精通！")
+        if st.button("重設所有進度"):
+            redis.delete("user_progress")
+            st.rerun()
+        st.stop()
 
-    selected = random.sample(available, min(len(available), WORDS_PER_SESSION))
-    
     st.session_state.update({
-        "game_words": selected,
+        "game_words": random.sample(available, min(len(available), WORDS_PER_SESSION)),
         "current_index": 0,
-        "session_score": 0,
-        "game_over": False,
-        "progress": progress,
         "answered": False,
-        "current_word": None
+        "progress": progress
     })
 
-# 初始化 Session
-if "game_words" not in st.session_state:
-    initialize_game()
+st.title("⚡ 全自動雲端同步系統")
+st.caption("進度會即時儲存至 Upstash 雲端，無需手動操作。")
 
-st.title("📚 單字間隔重複 (雲端版)")
-st.info("數據已與 Google Sheets 同步，進度不會遺失。")
-
-# --- 側邊欄 ---
-with st.sidebar:
-    st.header("📊 學習統計")
-    all_prog = get_all_progress()
-    mastered_count = sum(1 for v in all_prog.values() if v.get("score", 0) >= MASTERY_THRESHOLD)
-    st.write(f"已精通單字數: {mastered_count} / {len(VOCAB_DB)}")
-    if st.button("重新整理數據"):
-        st.rerun()
-
-# --- 遊戲結束 ---
-if st.session_state.get("game_over", False):
-    st.success("🎉 本輪完成！所有進度已安全儲存。")
-    if st.button("開始下一輪"):
-        for k in list(st.session_state.keys()): del st.session_state[k]
-        st.rerun()
-    st.stop()
-
-# --- 題目顯示 ---
 curr_word = st.session_state.game_words[st.session_state.current_index]
 data = VOCAB_DB[curr_word]
 
-if st.session_state.get("current_word") != curr_word:
+# 自動發音
+tts = gTTS(curr_word, lang='en')
+fp = BytesIO()
+tts.write_to_fp(fp)
+st.audio(fp, format="audio/mp3")
+
+st.markdown(f"<h1 style='text-align:center; color:#4CAF50;'>{curr_word}</h1>", unsafe_allow_html=True)
+
+if not st.session_state.answered:
     opts = data["distractors"] + [data["def"]]
     random.shuffle(opts)
-    st.session_state.options = opts
-    st.session_state.current_word = curr_word
-    st.session_state.answered = False
-
-st.markdown(f"<h1 style='text-align:center;'>{curr_word}</h1>", unsafe_allow_html=True)
-audio = tts_mp3_bytes_cached(curr_word)
-if audio: st.audio(audio, format="audio/mp3")
-
-# --- 回答邏輯 ---
-if not st.session_state.answered:
     cols = st.columns(2)
-    for i, opt in enumerate(st.session_state.options):
+    for i, opt in enumerate(opts):
         if cols[i%2].button(opt, use_container_width=True):
             st.session_state.answered = True
             today = str(datetime.date.today())
-            
             if opt == data["def"]:
-                st.session_state.last_res = "correct"
-                st.session_state.session_score += 1
-                # 間隔重複：讀取舊分數並更新
-                prog = st.session_state.progress.get(curr_word, {"score": 0, "last_date": ""})
-                if prog["last_date"] != today:
-                    new_score = int(prog["score"]) + 1
-                    save_word_progress(curr_word, new_score, today)
-                    st.session_state.msg = f"✅ 正確！掌握度上升至 {new_score}"
-                else:
-                    st.session_state.msg = "☑️ 正確！(今日分數已拿過)"
+                st.session_state.is_correct = True
+                p = st.session_state.progress.get(curr_word, {"score": 0, "last_date": ""})
+                if p["last_date"] != today:
+                    new_score = p["score"] + 1
+                    save_progress_cloud(curr_word, new_score, today)
+                    st.toast(f"✅ {curr_word} 已自動存檔", icon="☁️")
             else:
-                st.session_state.last_res = "wrong"
-                st.session_state.msg = "❌ 答錯了！"
+                st.session_state.is_correct = False
             st.rerun()
 else:
-    if st.session_state.last_res == "correct":
-        st.success(st.session_state.msg)
+    if st.session_state.is_correct:
+        st.success("Correct!")
     else:
-        st.error(st.session_state.msg)
-        st.info(f"正確定義: {data['def']}")
+        st.error(f"Wrong! Answer: {data['def']}")
     
-    st.write(f"📖 例句: {data['sent']}")
-    
-    if st.button("下一題 ➡️"):
+    if st.button("Next Word ➡️"):
         st.session_state.current_index += 1
+        st.session_state.answered = False
         if st.session_state.current_index >= len(st.session_state.game_words):
-            st.session_state.game_over = True
+            st.session_state.clear()
         st.rerun()
-
-
-
-
-
-    
-
-       
-
-  
-
-         
-            
-
-
- 
