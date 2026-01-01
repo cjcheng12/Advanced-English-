@@ -133,18 +133,44 @@ VOCAB_DB = {
 }
 
 # =========================================================
-# 3) 雲端讀寫函數
+# 3) 雲端讀寫函數 (修正版)
 # =========================================================
 def load_progress_cloud():
-    # 從 Redis 讀取 JSON 字串
-    data = redis.get("user_progress")
-    return data if data else {}
+    try:
+        # 從 Redis 讀取
+        data = redis.get("user_progress")
+        
+        # 如果是空的，回傳空字典
+        if data is None:
+            return {}
+        
+        # 確保資料是字典格式 (如果是字串則解析 JSON)
+        if isinstance(data, str):
+            import json
+            return json.loads(data)
+        
+        return data
+    except Exception as e:
+        st.error(f"讀取雲端資料失敗: {e}")
+        return {}
 
 def save_progress_cloud(word, score, last_date):
-    progress = load_progress_cloud()
-    progress[word] = {"score": score, "last_date": last_date}
-    # 存回 Redis (永久儲存)
-    redis.set("user_progress", progress)
+    try:
+        # 1. 先獲取目前的最新進度
+        progress = load_progress_cloud()
+        
+        # 2. 確保 progress 是一個字典，否則初始化
+        if not isinstance(progress, dict):
+            progress = {}
+            
+        # 3. 更新特定單字的資料
+        progress[word] = {"score": score, "last_date": last_date}
+        
+        # 4. 存回 Redis
+        redis.set("user_progress", progress)
+        st.toast(f"✅ {word} 已自動存檔", icon="☁️")
+    except Exception as e:
+        st.error(f"雲端存檔失敗: {e}")
 
 # =========================================================
 # 4) 遊戲主邏輯
