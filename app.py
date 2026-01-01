@@ -4,6 +4,7 @@ import datetime
 from upstash_redis import Redis
 from gtts import gTTS
 from io import BytesIO
+import json
 
 # =========================================================
 # 1) 初始化雲端資料庫
@@ -132,58 +133,76 @@ VOCAB_DB = {
     "imperative": {"def": "極重要的，必要的", "distractors": ["可選的", "無用的", "次要的"], "sent": "It is imperative that you see a doctor immediately."}
 }
 
+
 # =========================================================
 # 3) 雲端讀寫函數 (修正版)
 # =========================================================
 def load_progress_cloud():
     try:
-        # 從 Redis 讀取
         data = redis.get("user_progress")
-        
-        # 如果是空的，回傳空字典
-        if data is None:
-            return {}
-        
-        # 確保資料是字典格式 (如果是字串則解析 JSON)
+        if data is None: return {}
+        # 處理 Upstash 回傳格式 (有些版本回傳 dict, 有些回傳 JSON string)
         if isinstance(data, str):
-            import json
             return json.loads(data)
-        
         return data
     except Exception as e:
-        st.error(f"讀取雲端資料失敗: {e}")
+        st.error(f"雲端讀取失敗: {e}")
         return {}
 
 def save_progress_cloud(word, score, last_date):
     try:
-        # 1. 先獲取目前的最新進度
         progress = load_progress_cloud()
-        
-        # 2. 確保 progress 是一個字典，否則初始化
-        if not isinstance(progress, dict):
-            progress = {}
-            
-        # 3. 更新特定單字的資料
         progress[word] = {"score": score, "last_date": last_date}
-        
-        # 4. 存回 Redis
-        redis.set("user_progress", progress)
-        st.toast(f"✅ {word} 已自動存檔", icon="☁️")
+        redis.set("user_progress", json.dumps(progress)) # 統一轉為 JSON 字串儲存
+        st.toast(f"✅ {word} 進度已自動存檔", icon="☁️")
     except Exception as e:
         st.error(f"雲端存檔失敗: {e}")
 
 # =========================================================
-# 4) 遊戲主邏輯
+# 4) 介面與遊戲邏輯
 # =========================================================
-st.set_page_config(page_title="全自動永久存檔版", page_icon="⚡")
+st.set_page_config(page_title="單字大師 - 雲端版", page_icon="📈")
 
+# 讀取進度
+current_progress = load_progress_cloud()
+
+# --- 側邊欄：進度儀表板 ---
+with st.sidebar:
+    st.title("📊 學習戰報")
+    
+    # 統計數據
+    mastered_words = [w for w in VOCAB_DB.keys() if current_progress.get(w, {}).get("score", 0) >= MASTERY_THRESHOLD]
+    remaining_words = [w for w in VOCAB_DB.keys() if w not in mastered_words]
+    
+    col1, col2 = st.columns(2)
+    col1.metric("已精通", len(mastered_words))
+    col2.metric("剩餘單字", len(remaining_words))
+    
+    st.divider()
+    
+    st.subheader("🎯 單字熟練度清單")
+    # 顯示每個單字目前的進度條
+    for word in sorted(VOCAB_DB.keys()):
+        score = current_progress.get(word, {}).get("score", 0)
+        # 計算百分比用於進度條
+        percent = min(int(score / MASTERY_THRESHOLD * 100), 100)
+        
+        # 標籤顯示：單字 + 分數
+        label = f"**{word}** ({score}/{MASTERY_THRESHOLD})"
+        if score >= MASTERY_THRESHOLD:
+            st.write(f"✅ {label}")
+        else:
+            st.write(label)
+            st.progress(percent / 100)
+
+# --- 主畫面遊戲邏輯 ---
 if "game_words" not in st.session_state:
-    progress = load_progress_cloud()
-    available = [w for w in VOCAB_DB.keys() if progress.get(w, {}).get("score", 0) < MASTERY_THRESHOLD]
+    available = [w for w in VOCAB_DB.keys() if current_progress.get(w, {}).get("score", 0) < MASTERY_THRESHOLD]
     
     if not available:
-        st.success("🎉 太強了！所有單字都已精通！")
-        if st.button("重設所有進度"):
+        st.balloons()
+        st.success("🎉 太強了！你已經精通了所有單字！")
+        if st.button("重設所有進度 (警告：無法復原)"):
             redis.delete("user_progress")
             st.rerun()
         st.stop()
@@ -192,14 +211,13 @@ if "game_words" not in st.session_state:
         "game_words": random.sample(available, min(len(available), WORDS_PER_SESSION)),
         "current_index": 0,
         "answered": False,
-        "progress": progress
+        "progress": current_progress
     })
 
-st.title("⚡ 全自動雲端同步系統")
-st.caption("進度會即時儲存至 Upstash 雲端，無需手動操作。")
+st.title("⚡ 雲端自動同步練習")
 
 curr_word = st.session_state.game_words[st.session_state.current_index]
-data = VOCAB_DB[curr_word]
+word_data = VOCAB_DB[curr_word]
 
 # 自動發音
 tts = gTTS(curr_word, lang='en')
@@ -209,21 +227,24 @@ st.audio(fp, format="audio/mp3")
 
 st.markdown(f"<h1 style='text-align:center; color:#4CAF50;'>{curr_word}</h1>", unsafe_allow_html=True)
 
+# 顯示當前單字的分數 (讓練習者知道還差幾次)
+current_score = st.session_state.progress.get(curr_word, {}).get("score", 0)
+st.markdown(f"<p style='text-align:center;'>目前掌握度: <b>{current_score} / {MASTERY_THRESHOLD}</b></p>", unsafe_allow_html=True)
+
 if not st.session_state.answered:
-    opts = data["distractors"] + [data["def"]]
+    opts = word_data["distractors"] + [word_data["def"]]
     random.shuffle(opts)
     cols = st.columns(2)
     for i, opt in enumerate(opts):
         if cols[i%2].button(opt, use_container_width=True):
             st.session_state.answered = True
             today = str(datetime.date.today())
-            if opt == data["def"]:
+            if opt == word_data["def"]:
                 st.session_state.is_correct = True
                 p = st.session_state.progress.get(curr_word, {"score": 0, "last_date": ""})
                 if p["last_date"] != today:
                     new_score = p["score"] + 1
                     save_progress_cloud(curr_word, new_score, today)
-                    st.toast(f"✅ {curr_word} 已自動存檔", icon="☁️")
             else:
                 st.session_state.is_correct = False
             st.rerun()
@@ -231,11 +252,29 @@ else:
     if st.session_state.is_correct:
         st.success("Correct!")
     else:
-        st.error(f"Wrong! Answer: {data['def']}")
+        st.error(f"Wrong! Answer: {word_data['def']}")
+    
+    st.write(f"📖 **Example:** {word_data['sent']}")
     
     if st.button("Next Word ➡️"):
         st.session_state.current_index += 1
         st.session_state.answered = False
         if st.session_state.current_index >= len(st.session_state.game_words):
-            st.session_state.clear()
+            st.session_state.clear() # 本輪結束，清除狀態以便下一輪讀取雲端新進度
+        st.rerun()
+ 
+    
+ 
+    
+   
+     
+     
+       
+        
+       
+
+   
+
+          
+  
         st.rerun()
